@@ -56,14 +56,14 @@ Web-панель управления для [Telemt](https://github.com/telemt/
 ### Установка скриптом
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amirotin/telemt_panel/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dev-vbs/telemt_panel/main/install.sh | bash
 ```
 
 Скрипт скачает бинарник, создаст конфиг, настроит systemd-сервис и запустит панель.
 
 ### Ручная установка
 
-1. Скачайте бинарник из [Releases](https://github.com/amirotin/telemt_panel/releases) (или соберите сами — см. ниже).
+1. Скачайте бинарник из [Releases](https://github.com/dev-vbs/telemt_panel/releases) (или соберите сами — см. ниже).
 
 2. Создайте конфиг:
 
@@ -166,7 +166,7 @@ go build -ldflags="-s -w -X main.version=1.2.3" -o telemt-panel .
 | `[telemt]` | `config_path` | Путь к конфигу Telemt (для Docker / нестандартных путей) | автоматически из API |
 | `[panel]` | `binary_path` | Путь к бинарнику панели (для самообновления) | `/usr/local/bin/telemt-panel` |
 | `[panel]` | `service_name` | Имя systemd-сервиса панели | `telemt-panel` |
-| `[panel]` | `github_repo` | GitHub-репозиторий панели | `amirotin/telemt_panel` |
+| `[panel]` | `github_repo` | GitHub-репозиторий панели | `dev-vbs/telemt_panel` |
 | `[panel]` | `github_token` | Personal Access Token для GitHub API. Без токена лимит — 60 запросов/час на IP (shared), с токеном — 5000/час. Нужен если при проверке обновлений появляется ошибка rate limit. Достаточно fine-grained PAT без scopes: [создать токен](https://github.com/settings/personal-access-tokens/new) | — |
 | `[panel]` | `max_newer_releases` | Макс. кол-во новых версий в списке обновлений | `10` |
 | `[panel]` | `max_older_releases` | Макс. кол-во старых версий в списке обновлений | `10` |
