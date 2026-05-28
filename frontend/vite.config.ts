@@ -20,7 +20,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
+      // ws:true forwards the dashboard's /api/ws WebSocket upgrade too.
+      '/api': { target: 'http://localhost:8080', ws: true },
     },
   },
 })
