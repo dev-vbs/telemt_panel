@@ -11,8 +11,10 @@ import {
 import { usePolling } from '@/hooks/usePolling';
 import { telemt, panelApi, ApiError } from '@/lib/api';
 import { Link } from 'react-router-dom';
-import { Copy, Plus, Pencil, Trash2, Check, ArrowUp, ArrowDown, ArrowUpDown, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Copy, Plus, Pencil, Trash2, Check, ArrowUp, ArrowDown, ArrowUpDown, Search, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { formatBytes } from '@/lib/utils';
+import { useQuota, resetUserQuota, type QuotaEntry } from '@/hooks/useQuota';
+import { QuotaBar } from '@/components/QuotaBar';
 
 type SortKey = 'username' | 'current_connections' | 'active_unique_ips' | 'total_octets' | 'expiration_rfc3339';
 type SortDir = 'asc' | 'desc';
@@ -147,11 +149,23 @@ function collectLinks(links?: UserLinks, username?: string): LinkEntry[] {
   return result;
 }
 
+function QuotaCell({ user, entry }: { user: UserInfo; entry?: QuotaEntry }) {
+  const limit = entry?.data_quota_bytes || user.data_quota_bytes || 0;
+  if (entry && limit > 0) {
+    return <QuotaBar used={entry.used_bytes} limit={limit} />;
+  }
+  if (user.data_quota_bytes) {
+    return <Badge variant="outline">{formatBytes(user.data_quota_bytes)}</Badge>;
+  }
+  return <span className="text-text-secondary">-</span>;
+}
+
 export function UsersPage() {
   const { data: users, error, loading, refresh } = usePolling<UserInfo[]>(
     () => telemt.get('/v1/users'),
     10000
   );
+  const { quotaByUser, supported: quotaSupported, refresh: refreshQuota } = useQuota(10000);
 
   const [sortKey, setSortKey] = useState<SortKey>('username');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -226,6 +240,10 @@ export function UsersPage() {
   const [editUser, setEditUser] = useState<UserInfo | null>(null);
   const [deleteUser, setDeleteUser] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [resetUser, setResetUser] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetAllOpen, setResetAllOpen] = useState(false);
+  const [resettingAll, setResettingAll] = useState(false);
   const [actionError, setActionError] = useState('');
   const [userDefaults, setUserDefaults] = useState<{
     user_ad_tag?: string;
@@ -267,6 +285,49 @@ export function UsersPage() {
     }
   }, [deleteUser, refresh]);
 
+  const handleResetQuota = useCallback(async () => {
+    if (!resetUser) return;
+    setResetting(true);
+    setActionError('');
+    try {
+      await resetUserQuota(resetUser);
+      setResetUser(null);
+      refresh();
+      refreshQuota();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Reset failed');
+    } finally {
+      setResetting(false);
+    }
+  }, [resetUser, refresh, refreshQuota]);
+
+  // Users with a quota configured — the targets for a bulk reset.
+  const quotaUsers = useMemo(
+    () => (users ?? []).filter((u) => !!u.data_quota_bytes),
+    [users],
+  );
+
+  // No bulk endpoint exists, so reset each user's quota with its own request.
+  const handleResetAllQuotas = useCallback(async () => {
+    setResettingAll(true);
+    setActionError('');
+    const failed: string[] = [];
+    for (const u of quotaUsers) {
+      try {
+        await resetUserQuota(u.username);
+      } catch {
+        failed.push(u.username);
+      }
+    }
+    setResettingAll(false);
+    setResetAllOpen(false);
+    refresh();
+    refreshQuota();
+    if (failed.length) {
+      setActionError(`Failed to reset quota for ${failed.length} user(s): ${failed.join(', ')}`);
+    }
+  }, [quotaUsers, refresh, refreshQuota]);
+
   return (
     <div className="min-h-screen">
       <Header title="Users" refreshing={loading} onRefresh={refresh} />
@@ -286,11 +347,20 @@ export function UsersPage() {
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
             />
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={16} className="mr-1.5" />
-            <span className="hidden sm:inline">Create User</span>
-            <span className="sm:hidden">Create</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            {quotaSupported && quotaUsers.length > 0 && (
+              <Button variant="outline" onClick={() => setResetAllOpen(true)}>
+                <RotateCcw size={16} className="mr-1.5" />
+                <span className="hidden sm:inline">Reset all quotas</span>
+                <span className="sm:hidden">Reset all</span>
+              </Button>
+            )}
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus size={16} className="mr-1.5" />
+              <span className="hidden sm:inline">Create User</span>
+              <span className="sm:hidden">Create</span>
+            </Button>
+          </div>
         </div>
 
         {/* Mobile Sort Bar */}
@@ -412,11 +482,7 @@ export function UsersPage() {
                           <Badge variant="outline">{formatBytes(u.total_octets)}</Badge>
                         </TableCell>
                         <TableCell>
-                          {u.data_quota_bytes ? (
-                            <Badge variant="outline">{formatBytes(u.data_quota_bytes)}</Badge>
-                          ) : (
-                            <span className="text-text-secondary">-</span>
-                          )}
+                          <QuotaCell user={u} entry={quotaByUser.get(u.username)} />
                         </TableCell>
                         <TableCell>
                           {u.expiration_rfc3339 ? (
@@ -427,6 +493,15 @@ export function UsersPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            {quotaSupported && !!u.data_quota_bytes && (
+                              <button
+                                onClick={() => setResetUser(u.username)}
+                                title="Reset quota"
+                                className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            )}
                             <button
                               onClick={() => setEditUser(u)}
                               className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
@@ -466,6 +541,15 @@ export function UsersPage() {
                   <div className="flex items-center justify-between">
                     <Link to={`/users/${u.username}`} className="font-medium text-accent hover:underline">{u.username}</Link>
                     <div className="flex gap-1">
+                      {quotaSupported && !!u.data_quota_bytes && (
+                        <button
+                          onClick={() => setResetUser(u.username)}
+                          title="Reset quota"
+                          className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditUser(u)}
                         className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
@@ -521,11 +605,7 @@ export function UsersPage() {
                     <div>
                       <div className="text-text-secondary">Quota</div>
                       <div className="mt-1">
-                        {u.data_quota_bytes ? (
-                          <Badge variant="outline">{formatBytes(u.data_quota_bytes)}</Badge>
-                        ) : (
-                          <span className="text-text-secondary">-</span>
-                        )}
+                        <QuotaCell user={u} entry={quotaByUser.get(u.username)} />
                       </div>
                     </div>
                     {u.expiration_rfc3339 && (
@@ -601,6 +681,30 @@ export function UsersPage() {
         title="Delete User"
         message={`Are you sure you want to delete user "${deleteUser}"? This action cannot be undone.`}
         loading={deleting}
+      />
+
+      <ConfirmDialog
+        open={!!resetUser}
+        onClose={() => setResetUser(null)}
+        onConfirm={handleResetQuota}
+        title="Reset quota"
+        message={`Reset the data-quota counter for "${resetUser}"? Used traffic will be set back to zero.`}
+        confirmLabel="Reset"
+        loadingLabel="Resetting..."
+        confirmVariant="default"
+        loading={resetting}
+      />
+
+      <ConfirmDialog
+        open={resetAllOpen}
+        onClose={() => setResetAllOpen(false)}
+        onConfirm={handleResetAllQuotas}
+        title="Reset all quotas"
+        message={`Reset the data-quota counter for all ${quotaUsers.length} user(s) with a quota? Used traffic will be set back to zero for each. This sends one request per user.`}
+        confirmLabel="Reset all"
+        loadingLabel="Resetting..."
+        confirmVariant="default"
+        loading={resettingAll}
       />
     </div>
   );

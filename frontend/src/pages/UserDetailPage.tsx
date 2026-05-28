@@ -1,15 +1,19 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Header } from '@/components/layout/Header';
 import { ErrorAlert } from '@/components/ErrorAlert';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { QuotaBar } from '@/components/QuotaBar';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui/table';
 import { usePolling } from '@/hooks/usePolling';
-import { telemt, panelApi } from '@/lib/api';
+import { useQuota, resetUserQuota } from '@/hooks/useQuota';
+import { telemt, panelApi, ApiError } from '@/lib/api';
 import { formatBytes } from '@/lib/utils';
-import { ArrowLeft, ChevronDown, ChevronRight, Search, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Search, AlertTriangle, RotateCcw } from 'lucide-react';
 
 interface UserInfo {
   username: string;
@@ -208,6 +212,28 @@ export function UserDetailPage() {
     () => telemt.get('/v1/users'),
     10000
   );
+  const { quotaByUser, supported: quotaSupported, refresh: refreshQuota } = useQuota(10000);
+  const quota = username ? quotaByUser.get(username) : undefined;
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState('');
+
+  const handleResetQuota = useCallback(async () => {
+    if (!username) return;
+    setResetting(true);
+    setResetError('');
+    try {
+      await resetUserQuota(username);
+      setResetOpen(false);
+      refresh();
+      refreshQuota();
+    } catch (err) {
+      setResetError(err instanceof ApiError ? err.message : 'Reset failed');
+    } finally {
+      setResetting(false);
+    }
+  }, [username, refresh, refreshQuota]);
 
   const [geoData, setGeoData] = useState<Map<string, GeoIPInfo>>(new Map());
   const [geoError, setGeoError] = useState<string | null>(null);
@@ -287,6 +313,28 @@ export function UserDetailPage() {
               />
             </div>
 
+            {/* Data quota */}
+            {quotaSupported && quota && quota.data_quota_bytes > 0 && (
+              <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-text-primary">Data quota</span>
+                  <Button variant="outline" size="sm" onClick={() => setResetOpen(true)}>
+                    <RotateCcw size={14} className="mr-1.5" />
+                    Reset
+                  </Button>
+                </div>
+                <QuotaBar used={quota.used_bytes} limit={quota.data_quota_bytes} />
+                <div className="text-xs text-text-secondary">
+                  Last reset:{' '}
+                  {quota.last_reset_epoch_secs > 0
+                    ? new Date(quota.last_reset_epoch_secs * 1000).toLocaleString()
+                    : 'never'}
+                </div>
+              </div>
+            )}
+
+            {resetError && <ErrorAlert message={resetError} />}
+
             {/* GeoIP status banner */}
             {geoError && (
               <div className="flex items-center gap-2 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-sm text-yellow-200">
@@ -325,6 +373,18 @@ export function UserDetailPage() {
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetOpen}
+        onClose={() => setResetOpen(false)}
+        onConfirm={handleResetQuota}
+        title="Reset quota"
+        message={`Reset the data-quota counter for "${username}"? Used traffic will be set back to zero.`}
+        confirmLabel="Reset"
+        loadingLabel="Resetting..."
+        confirmVariant="default"
+        loading={resetting}
+      />
     </div>
   );
 }
