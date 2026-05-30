@@ -78,20 +78,23 @@ function appendComment(raw: string, username: string): string {
 function collectLinks(links?: UserLinks, username?: string): LinkEntry[] {
   const result: LinkEntry[] = [];
   if (!links) return result;
-  const addLink = (rawUrl: string, label: string) => {
+  const addLink = (rawUrl: string, label: string, host: string) => {
     const url = username ? appendComment(rawUrl, username) : rawUrl;
-    result.push({ url, label, host: getServer(url) });
+    result.push({ url, label, host });
   };
   const addLinks = (urls: string[], label: string) => {
-    for (const url of urls) addLink(url, label);
+    for (const url of urls) addLink(url, label, getServer(url));
   };
 
-  // NOTE: tls_domains carries faketls *masking* domains (camouflage SNI), which are
-  // not necessarily the user's own server — they may be arbitrary third-party hosts.
-  // Swapping them into the link's `server` produces a broken link, so we don't touch
-  // it. The backend already emits one usable TLS link per masking domain in `tls`
-  // (each keeping the real server), so just surface those as-is.
-  if (links.tls) addLinks(links.tls, 'TLS');
+  if (links.tls) {
+    // tls_domains maps each fronted TLS link to its faketls *masking* domain. The
+    // masking domain may be an arbitrary third-party host, so we must NOT rewrite the
+    // link's `server` — but we do use it as the display label, since the links are
+    // otherwise identical to the eye. Links with no masking entry (e.g. the primary
+    // one) fall back to their real server.
+    const maskByLink = new Map((links.tls_domains ?? []).map((d) => [d.link, d.domain]));
+    for (const url of links.tls) addLink(url, 'TLS', maskByLink.get(url) ?? getServer(url));
+  }
   if (links.secure) addLinks(links.secure, 'Secure');
   if (links.classic) addLinks(links.classic, 'Classic');
   return result;
