@@ -4,7 +4,7 @@ import { ErrorAlert } from '@/components/ErrorAlert';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { UserFormDialog } from '@/components/UserFormDialog';
 import { UserCard } from '@/components/UserCard';
-import { ProxyLinkButtons, type ProxyLink } from '@/components/ProxyLinkButtons';
+import { ProxyLinkButtons } from '@/components/ProxyLinkButtons';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -17,21 +17,10 @@ import { Plus, Pencil, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Search, ChevronL
 import { formatBytes } from '@/lib/utils';
 import { useQuota, resetUserQuota, type QuotaEntry } from '@/hooks/useQuota';
 import { QuotaBar } from '@/components/QuotaBar';
+import { buildProxyLinks, type UserLinks } from './usersPage.helpers';
 
 type SortKey = 'username' | 'current_connections' | 'active_unique_ips' | 'total_octets' | 'expiration_rfc3339';
 type SortDir = 'asc' | 'desc';
-
-interface TlsDomainLink {
-  domain: string;
-  link: string;
-}
-
-interface UserLinks {
-  classic?: string[];
-  secure?: string[];
-  tls?: string[];
-  tls_domains?: TlsDomainLink[];
-}
 
 interface UserInfo {
   username: string;
@@ -47,42 +36,6 @@ interface UserInfo {
   active_unique_ips_list?: string[];
   recent_unique_ips_list?: string[];
   links?: UserLinks;
-}
-
-function getServer(raw: string): string {
-  try {
-    return new URL(raw).searchParams.get('server') ?? '';
-  } catch {
-    return raw.match(/[?&]server=([^&]*)/)?.[1] ?? '';
-  }
-}
-
-function appendComment(raw: string, username: string): string {
-  try {
-    const u = new URL(raw);
-    u.searchParams.set('comment', username);
-    return u.toString();
-  } catch {
-    // Fallback: URL may be a protocol link (e.g. ss://...), append as query
-    const sep = raw.includes('?') ? '&' : '?';
-    return raw + sep + 'comment=' + encodeURIComponent(username);
-  }
-}
-
-// Build the selectable TLS link list for a user. Each tls link keeps its real
-// `server` untouched; tls_domains only supplies the display label (faketls masking
-// domain). Links with no masking entry are the primary/default and are surfaced
-// first. Secure/Classic links are intentionally not shown.
-function tlsLinks(links: UserLinks | undefined, username: string): ProxyLink[] {
-  if (!links?.tls?.length) return [];
-  const maskByLink = new Map((links.tls_domains ?? []).map((d) => [d.link, d.domain]));
-  return links.tls
-    .map((link) => ({
-      url: appendComment(link, username),
-      domain: maskByLink.get(link) ?? getServer(link),
-      isDefault: !maskByLink.has(link),
-    }))
-    .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
 }
 
 function QuotaCell({ user, entry }: { user: UserInfo; entry?: QuotaEntry }) {
@@ -384,7 +337,7 @@ export function UsersPage() {
                           <Link to={`/users/${u.username}`} className="text-accent hover:underline">{u.username}</Link>
                         </TableCell>
                         <TableCell>
-                          <ProxyLinkButtons links={tlsLinks(u.links, u.username)} />
+                          <ProxyLinkButtons links={buildProxyLinks(u.links, u.username)} />
                         </TableCell>
                         <TableCell>
                           <Badge variant={u.current_connections > 0 ? 'default' : 'outline'}>
@@ -461,7 +414,7 @@ export function UsersPage() {
                   activeUniqueIps={u.active_unique_ips}
                   totalTraffic={u.total_octets}
                   online={u.current_connections > 0}
-                  links={tlsLinks(u.links, u.username)}
+                  links={buildProxyLinks(u.links, u.username)}
                   onEdit={() => setEditUser(u)}
                   onDelete={() => setDeleteUser(u.username)}
                   quotaUsed={quotaByUser.get(u.username)?.used_bytes}

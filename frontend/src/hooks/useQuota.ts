@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { telemt } from '@/lib/api';
+import { QUOTA_ENDPOINT } from './useQuotaEndpoint';
 
 export interface QuotaEntry {
   username: string;
@@ -33,7 +34,7 @@ export function useQuota(intervalMs = 10000): UseQuotaResult {
 
   const doFetch = useCallback(async () => {
     try {
-      const data = await telemt.get<QuotaListData>('/v1/users/quota');
+      const data = await telemt.get<QuotaListData>(QUOTA_ENDPOINT);
       const map = new Map<string, QuotaEntry>();
       for (const entry of data.users ?? []) map.set(entry.username, entry);
       everSupported.current = true;

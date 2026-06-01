@@ -3,6 +3,7 @@ import { CopyButton } from '@/components/CopyButton';
 
 export interface ProxyLink {
   url: string;     // full tg://proxy link, with the `comment` already appended
+  label: string;   // proxy mode label: TLS, Secure, or Classic
   domain: string;  // display label: masking domain, or the real server for the default
   isDefault: boolean;
 }
@@ -20,7 +21,7 @@ export function ProxyLinkButtons({ links }: { links: ProxyLink[] }) {
   return (
     <div className="flex flex-col items-start gap-1.5">
       <div className="flex items-center gap-1">
-        <CopyButton text={selected.url} label="tls" />
+        <CopyButton text={selected.url} label={selected.label} />
         <CopyButton text={selected.url.replace('tg://proxy', 'https://t.me/proxy')} label="t.me" />
       </div>
       {links.length > 1 && (
