@@ -87,7 +87,11 @@ func (p *TelemtProxy) GetManagedConfig() (map[string]interface{}, string, error)
 		Data     map[string]interface{} `json:"data"`
 		Revision string                 `json:"revision"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+	// UseNumber so JSON integers (e.g. a port 443) decode as json.Number rather
+	// than float64; otherwise they later render as 443.0 in the TOML editor.
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&env); err != nil {
 		return nil, "", err
 	}
 	if env.Data == nil {

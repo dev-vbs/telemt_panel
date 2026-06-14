@@ -37,6 +37,26 @@ func TestGetManagedConfig(t *testing.T) {
 	}
 }
 
+func TestGetManagedConfigPreservesIntegers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true,"data":{"server":{"port":443}},"revision":"r"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := NewTelemtProxy(srv.URL, "Bearer tok")
+	sections, _, err := p.GetManagedConfig()
+	if err != nil {
+		t.Fatalf("GetManagedConfig: %v", err)
+	}
+	server, ok := sections["server"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("server section = %#v", sections["server"])
+	}
+	if _, ok := server["port"].(json.Number); !ok {
+		t.Fatalf("port type = %T, want json.Number (UseNumber must be enabled)", server["port"])
+	}
+}
+
 func TestPatchManagedConfigSendsIfMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/v1/config" {
