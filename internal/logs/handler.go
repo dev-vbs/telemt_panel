@@ -33,6 +33,7 @@ var wsUpgrader = websocket.Upgrader{
 type ClientMsg struct {
 	Action string `json:"action"` // "start", "stop", "history"
 	Lines  int    `json:"lines"`
+	Since  string `json:"since"`
 }
 
 // ServerMsg is a message to the client.
@@ -101,6 +102,7 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		streamMu  sync.Mutex
 		cancel    context.CancelFunc
 		streaming bool
+		streamSeq int64
 	)
 
 	send := func(msg ServerMsg) {
@@ -119,6 +121,7 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cancel = nil
 		}
 		streaming = false
+		streamSeq++
 	}
 
 	defer stopStream()
@@ -143,9 +146,10 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				msg.Lines = 200
 			}
 			lines := ClampLines(msg.Lines)
+			opts := LogOptions{Since: NormalizeSince(msg.Since)}
 
 			// Send history first
-			history, err := h.source.Tail(connCtx, lines)
+			history, err := h.source.Tail(connCtx, lines, opts)
 			if err != nil {
 				send(ServerMsg{Type: "error", Message: err.Error()})
 				continue
@@ -155,14 +159,17 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Start streaming
 			ctx, c := context.WithCancel(connCtx)
 			streamMu.Lock()
+			streamSeq++
+			thisStream := streamSeq
 			cancel = c
 			streaming = true
 			streamMu.Unlock()
 
-			ch, err := h.source.Stream(ctx)
+			ch, err := h.source.Stream(ctx, opts)
 			if err != nil {
 				cancel()
 				streamMu.Lock()
+				streamSeq++
 				cancel = nil
 				streaming = false
 				streamMu.Unlock()
@@ -178,8 +185,13 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				// Channel closed — process exited unexpectedly or context cancelled
 				streamMu.Lock()
+				if thisStream != streamSeq {
+					streamMu.Unlock()
+					return
+				}
 				wasStreaming := streaming
 				streaming = false
+				cancel = nil
 				streamMu.Unlock()
 				if wasStreaming {
 					send(ServerMsg{Type: "error", Message: "Log stream ended unexpectedly"})
@@ -204,7 +216,8 @@ func (h *WsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				msg.Lines = 200
 			}
 			lines := ClampLines(msg.Lines)
-			history, err := h.source.Tail(connCtx, lines)
+			opts := LogOptions{Since: NormalizeSince(msg.Since)}
+			history, err := h.source.Tail(connCtx, lines, opts)
 			if err != nil {
 				send(ServerMsg{Type: "error", Message: err.Error()})
 				continue

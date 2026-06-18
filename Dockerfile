@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Build Go binary (static, works on any Linux: glibc/musl)
-FROM golang:1.24-bookworm AS backend
+FROM golang:1.25-bookworm AS backend
 ARG TARGETARCH
 WORKDIR /app
 COPY go.mod ./

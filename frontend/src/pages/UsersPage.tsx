@@ -3,6 +3,8 @@ import { Header } from '@/components/layout/Header';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { UserFormDialog } from '@/components/UserFormDialog';
+import { UserCard } from '@/components/UserCard';
+import { ProxyLinkButtons } from '@/components/ProxyLinkButtons';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -11,17 +13,14 @@ import {
 import { usePolling } from '@/hooks/usePolling';
 import { telemt, panelApi, ApiError } from '@/lib/api';
 import { Link } from 'react-router-dom';
-import { Copy, Plus, Pencil, Trash2, Check, ArrowUp, ArrowDown, ArrowUpDown, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Search, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { formatBytes } from '@/lib/utils';
+import { useQuota, resetUserQuota, type QuotaEntry } from '@/hooks/useQuota';
+import { QuotaBar } from '@/components/QuotaBar';
+import { buildProxyLinks, type UserLinks } from './usersPage.helpers';
 
 type SortKey = 'username' | 'current_connections' | 'active_unique_ips' | 'total_octets' | 'expiration_rfc3339';
 type SortDir = 'asc' | 'desc';
-
-interface UserLinks {
-  classic?: string[];
-  secure?: string[];
-  tls?: string[];
-}
 
 interface UserInfo {
   username: string;
@@ -39,72 +38,15 @@ interface UserInfo {
   links?: UserLinks;
 }
 
-function CopyButton({ text, label }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // Fallback for non-secure contexts (HTTP)
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Ignore copy failures
-    }
-  };
-
-  return (
-    <button
-      onClick={handleCopy}
-      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-background hover:bg-surface-hover text-text-secondary hover:text-text-primary transition-colors"
-      title={label || 'Copy'}
-    >
-      {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
-      {label && <span>{copied ? 'Copied' : label}</span>}
-    </button>
-  );
-}
-
-interface LinkEntry {
-  url: string;
-  label: string;
-}
-
-function appendComment(raw: string, username: string): string {
-  try {
-    const u = new URL(raw);
-    u.searchParams.set('comment', username);
-    return u.toString();
-  } catch {
-    // Fallback: URL may be a protocol link (e.g. ss://...), append as query
-    const sep = raw.includes('?') ? '&' : '?';
-    return raw + sep + 'comment=' + encodeURIComponent(username);
+function QuotaCell({ user, entry }: { user: UserInfo; entry?: QuotaEntry }) {
+  const limit = entry?.data_quota_bytes || user.data_quota_bytes || 0;
+  if (entry && limit > 0) {
+    return <QuotaBar used={entry.used_bytes} limit={limit} />;
   }
-}
-
-function collectLinks(links?: UserLinks, username?: string): LinkEntry[] {
-  const result: LinkEntry[] = [];
-  if (!links) return result;
-  const addLinks = (urls: string[], label: string) => {
-    for (const url of urls) {
-      result.push({ url: username ? appendComment(url, username) : url, label });
-    }
-  };
-  if (links.tls) addLinks(links.tls, 'TLS');
-  if (links.secure) addLinks(links.secure, 'Secure');
-  if (links.classic) addLinks(links.classic, 'Classic');
-  return result;
+  if (user.data_quota_bytes) {
+    return <Badge variant="outline">{formatBytes(user.data_quota_bytes)}</Badge>;
+  }
+  return <span className="text-text-secondary">-</span>;
 }
 
 export function UsersPage() {
@@ -112,6 +54,7 @@ export function UsersPage() {
     () => telemt.get('/v1/users'),
     10000
   );
+  const { quotaByUser, supported: quotaSupported, refresh: refreshQuota } = useQuota(10000);
 
   const [sortKey, setSortKey] = useState<SortKey>('username');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -186,6 +129,10 @@ export function UsersPage() {
   const [editUser, setEditUser] = useState<UserInfo | null>(null);
   const [deleteUser, setDeleteUser] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [resetUser, setResetUser] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetAllOpen, setResetAllOpen] = useState(false);
+  const [resettingAll, setResettingAll] = useState(false);
   const [actionError, setActionError] = useState('');
   const [userDefaults, setUserDefaults] = useState<{
     user_ad_tag?: string;
@@ -227,6 +174,49 @@ export function UsersPage() {
     }
   }, [deleteUser, refresh]);
 
+  const handleResetQuota = useCallback(async () => {
+    if (!resetUser) return;
+    setResetting(true);
+    setActionError('');
+    try {
+      await resetUserQuota(resetUser);
+      setResetUser(null);
+      refresh();
+      refreshQuota();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Reset failed');
+    } finally {
+      setResetting(false);
+    }
+  }, [resetUser, refresh, refreshQuota]);
+
+  // Users with a quota configured — the targets for a bulk reset.
+  const quotaUsers = useMemo(
+    () => (users ?? []).filter((u) => !!u.data_quota_bytes),
+    [users],
+  );
+
+  // No bulk endpoint exists, so reset each user's quota with its own request.
+  const handleResetAllQuotas = useCallback(async () => {
+    setResettingAll(true);
+    setActionError('');
+    const failed: string[] = [];
+    for (const u of quotaUsers) {
+      try {
+        await resetUserQuota(u.username);
+      } catch {
+        failed.push(u.username);
+      }
+    }
+    setResettingAll(false);
+    setResetAllOpen(false);
+    refresh();
+    refreshQuota();
+    if (failed.length) {
+      setActionError(`Failed to reset quota for ${failed.length} user(s): ${failed.join(', ')}`);
+    }
+  }, [quotaUsers, refresh, refreshQuota]);
+
   return (
     <div className="min-h-screen">
       <Header title="Users" refreshing={loading} onRefresh={refresh} />
@@ -243,14 +233,23 @@ export function UsersPage() {
               placeholder="Search users..."
               value={search}
               onChange={(e) => handleSearchChange(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
+              className="w-full pl-9 pr-3 py-2 min-h-[44px] rounded-lg border border-border bg-surface text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent/50"
             />
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={16} className="mr-1.5" />
-            <span className="hidden sm:inline">Create User</span>
-            <span className="sm:hidden">Create</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            {quotaSupported && quotaUsers.length > 0 && (
+              <Button variant="outline" onClick={() => setResetAllOpen(true)}>
+                <RotateCcw size={16} className="mr-1.5" />
+                <span className="hidden sm:inline">Reset all quotas</span>
+                <span className="sm:hidden">Reset all</span>
+              </Button>
+            )}
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus size={16} className="mr-1.5" />
+              <span className="hidden sm:inline">Create User</span>
+              <span className="sm:hidden">Create</span>
+            </Button>
+          </div>
         </div>
 
         {/* Mobile Sort Bar */}
@@ -261,7 +260,7 @@ export function UsersPage() {
               value={sortKey}
               onChange={(e) => toggleSort(e.target.value as SortKey)}
               aria-label="Sort by"
-              className="flex-1 min-w-0 bg-background text-text-primary rounded-md px-2 py-1.5 text-sm border border-border focus:border-accent focus:outline-none"
+              className="flex-1 min-w-0 min-h-[44px] bg-background text-text-primary rounded-md px-2 py-1.5 text-sm border border-border focus:border-accent focus:outline-none"
             >
               <option value="username">Username</option>
               <option value="current_connections">Connections</option>
@@ -274,7 +273,7 @@ export function UsersPage() {
             onClick={() => toggleSort(sortKey)}
             aria-label={sortDir === 'asc' ? 'Sort Descending' : 'Sort Ascending'}
             title={sortDir === 'asc' ? 'Sort Descending' : 'Sort Ascending'}
-            className="p-1.5 rounded-md border border-border bg-background hover:bg-surface-hover text-text-secondary transition-colors flex-shrink-0"
+            className="p-2.5 rounded-md border border-border bg-background hover:bg-surface-hover text-text-secondary transition-colors flex-shrink-0"
           >
             {sortDir === 'asc' ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
           </button>
@@ -330,7 +329,6 @@ export function UsersPage() {
                   </TableRow>
                 ) : (
                   pagedUsers.map((u) => {
-                    const allLinks = collectLinks(u.links, u.username);
                     const hasConns = u.current_connections > 0;
 
                     return (
@@ -339,18 +337,7 @@ export function UsersPage() {
                           <Link to={`/users/${u.username}`} className="text-accent hover:underline">{u.username}</Link>
                         </TableCell>
                         <TableCell>
-                          {allLinks.length > 0 ? (
-                            <div className="flex flex-col gap-1">
-                              {allLinks.map((link, i) => (
-                                <div key={i} className="flex items-center gap-1">
-                                  <CopyButton text={link.url.replace('tg://proxy', 'https://t.me/proxy')} label={link.label} />
-                                  <CopyButton text={link.url} label="t.me" />
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-text-secondary text-xs">No links</span>
-                          )}
+                          <ProxyLinkButtons links={buildProxyLinks(u.links, u.username)} />
                         </TableCell>
                         <TableCell>
                           <Badge variant={u.current_connections > 0 ? 'default' : 'outline'}>
@@ -367,11 +354,7 @@ export function UsersPage() {
                           <Badge variant="outline">{formatBytes(u.total_octets)}</Badge>
                         </TableCell>
                         <TableCell>
-                          {u.data_quota_bytes ? (
-                            <Badge variant="outline">{formatBytes(u.data_quota_bytes)}</Badge>
-                          ) : (
-                            <span className="text-text-secondary">-</span>
-                          )}
+                          <QuotaCell user={u} entry={quotaByUser.get(u.username)} />
                         </TableCell>
                         <TableCell>
                           {u.expiration_rfc3339 ? (
@@ -382,6 +365,15 @@ export function UsersPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            {quotaSupported && !!u.data_quota_bytes && (
+                              <button
+                                onClick={() => setResetUser(u.username)}
+                                title="Reset quota"
+                                className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            )}
                             <button
                               onClick={() => setEditUser(u)}
                               className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
@@ -413,79 +405,26 @@ export function UsersPage() {
             </div>
           ) : (
             pagedUsers.map((u) => {
-              const allLinks = collectLinks(u.links, u.username);
-              const hasConns = u.current_connections > 0;
-
               return (
-                <div key={u.username} className={`bg-surface border rounded-lg p-3 space-y-3 ${hasConns ? 'border-success/40 bg-success/5' : 'border-border'}`}>
-                  <div className="flex items-center justify-between">
-                    <Link to={`/users/${u.username}`} className="font-medium text-accent hover:underline">{u.username}</Link>
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => setEditUser(u)}
-                        className="p-1.5 rounded text-text-secondary hover:text-accent hover:bg-surface-hover"
-                      >
-                        <Pencil size={14} />
-                      </button>
-                      <button
-                        onClick={() => setDeleteUser(u.username)}
-                        className="p-1.5 rounded text-text-secondary hover:text-danger hover:bg-surface-hover"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {allLinks.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="text-xs text-text-secondary">Proxy Links</div>
-                      {allLinks.map((link, i) => (
-                        <div key={i} className="flex items-center gap-1">
-                          <CopyButton text={link.url.replace('tg://proxy', 'https://t.me/proxy')} label={link.label} />
-                          <CopyButton text={link.url} label="t.me" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <div className="text-text-secondary">Connections</div>
-                      <Badge variant={u.current_connections > 0 ? 'default' : 'outline'} className="mt-1">
-                        {u.current_connections}
-                      </Badge>
-                    </div>
-                    <div>
-                      <div className="text-text-secondary">Active IPs</div>
-                      <div className="mt-1">
-                        {u.active_unique_ips}
-                        {u.max_unique_ips != null && u.max_unique_ips > 0 && (
-                          <span className="text-text-secondary ml-1">/ {u.max_unique_ips}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-text-secondary">Traffic</div>
-                      <Badge variant="outline" className="mt-1">{formatBytes(u.total_octets)}</Badge>
-                    </div>
-                    <div>
-                      <div className="text-text-secondary">Quota</div>
-                      <div className="mt-1">
-                        {u.data_quota_bytes ? (
-                          <Badge variant="outline">{formatBytes(u.data_quota_bytes)}</Badge>
-                        ) : (
-                          <span className="text-text-secondary">-</span>
-                        )}
-                      </div>
-                    </div>
-                    {u.expiration_rfc3339 && (
-                      <div className="col-span-2">
-                        <div className="text-text-secondary">Expiration</div>
-                        <div className="mt-1">{new Date(u.expiration_rfc3339).toLocaleDateString()}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <UserCard
+                  key={u.username}
+                  username={u.username}
+                  detailHref={`/users/${u.username}`}
+                  connections={u.current_connections}
+                  activeUniqueIps={u.active_unique_ips}
+                  totalTraffic={u.total_octets}
+                  online={u.current_connections > 0}
+                  links={buildProxyLinks(u.links, u.username)}
+                  onEdit={() => setEditUser(u)}
+                  onDelete={() => setDeleteUser(u.username)}
+                  quotaUsed={quotaByUser.get(u.username)?.used_bytes}
+                  quotaLimit={quotaByUser.get(u.username)?.data_quota_bytes}
+                  onResetQuota={
+                    quotaSupported && !!u.data_quota_bytes
+                      ? () => setResetUser(u.username)
+                      : undefined
+                  }
+                />
               );
             })
           )}
@@ -511,7 +450,7 @@ export function UsersPage() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={safePage <= 1}
-                className="p-1.5 rounded border border-border bg-surface hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed"
+                className="p-2.5 rounded border border-border bg-surface hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -519,7 +458,7 @@ export function UsersPage() {
               <button
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={safePage >= totalPages}
-                className="p-1.5 rounded border border-border bg-surface hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed"
+                className="p-2.5 rounded border border-border bg-surface hover:bg-surface-hover disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <ChevronRight size={16} />
               </button>
@@ -551,6 +490,30 @@ export function UsersPage() {
         title="Delete User"
         message={`Are you sure you want to delete user "${deleteUser}"? This action cannot be undone.`}
         loading={deleting}
+      />
+
+      <ConfirmDialog
+        open={!!resetUser}
+        onClose={() => setResetUser(null)}
+        onConfirm={handleResetQuota}
+        title="Reset quota"
+        message={`Reset the data-quota counter for "${resetUser}"? Used traffic will be set back to zero.`}
+        confirmLabel="Reset"
+        loadingLabel="Resetting..."
+        confirmVariant="default"
+        loading={resetting}
+      />
+
+      <ConfirmDialog
+        open={resetAllOpen}
+        onClose={() => setResetAllOpen(false)}
+        onConfirm={handleResetAllQuotas}
+        title="Reset all quotas"
+        message={`Reset the data-quota counter for all ${quotaUsers.length} user(s) with a quota? Used traffic will be set back to zero for each. This sends one request per user.`}
+        confirmLabel="Reset all"
+        loadingLabel="Resetting..."
+        confirmVariant="default"
+        loading={resettingAll}
       />
     </div>
   );

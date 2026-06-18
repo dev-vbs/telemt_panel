@@ -105,14 +105,14 @@ export function useLogStream() {
     wsRef.current = null;
   }, []);
 
-  const start = useCallback((lines: number = 200) => {
+  const start = useCallback((lines: number = 200, since: string = '1h') => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       connect();
       // Wait for connection, then start
       const check = setInterval(() => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           clearInterval(check);
-          wsRef.current!.send(JSON.stringify({ action: 'start', lines }));
+          wsRef.current!.send(JSON.stringify({ action: 'start', lines, since }));
         }
       }, 100);
       setTimeout(() => clearInterval(check), 5000);
@@ -120,13 +120,17 @@ export function useLogStream() {
     }
     setState((prev) => ({ ...prev, lines: [], error: null }));
     idCounter.current = 0;
-    wsRef.current.send(JSON.stringify({ action: 'start', lines }));
+    wsRef.current.send(JSON.stringify({ action: 'start', lines, since }));
   }, [connect]);
 
   const stop = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: 'stop' }));
     }
+    setState((prev) => ({ ...prev, streaming: false, paused: false }));
+    pausedRef.current = false;
+    pauseBuffer.current = [];
+    setBufferedCount(0);
   }, []);
 
   const pause = useCallback(() => {

@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 type dockerSource struct {
@@ -36,29 +39,61 @@ func newDockerSource(containerName string) (*dockerSource, error) {
 
 func (s *dockerSource) Name() string { return "docker" }
 
-func (s *dockerSource) Tail(ctx context.Context, n int) ([]string, error) {
+func (s *dockerSource) Tail(ctx context.Context, n int, opts LogOptions) ([]string, error) {
 	n = ClampLines(n)
 	if s.useSocket {
-		return s.tailViaSocket(ctx, n)
+		return s.tailViaSocket(ctx, n, opts)
 	}
-	return s.tailViaCLI(ctx, n)
+	return s.tailViaCLI(ctx, n, opts)
 }
 
-func (s *dockerSource) Stream(ctx context.Context) (<-chan string, error) {
+func (s *dockerSource) Stream(ctx context.Context, opts LogOptions) (<-chan string, error) {
 	if s.useSocket {
-		return s.streamViaSocket(ctx)
+		return s.streamViaSocket(ctx, opts)
 	}
-	return s.streamViaCLI(ctx)
+	return s.streamViaCLI(ctx, opts)
 }
 
 // --- CLI methods ---
 
-func (s *dockerSource) tailViaCLI(ctx context.Context, n int) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "logs",
-		"--tail", fmt.Sprintf("%d", n),
+func dockerLogArgs(containerName string, follow bool, n int, opts LogOptions) []string {
+	args := []string{"logs"}
+	if follow {
+		args = append(args, "-f")
+	} else {
+		args = append(args, "--tail", fmt.Sprintf("%d", ClampLines(n)))
+	}
+	if since := dockerSinceArg(opts.Since); since != "" {
+		args = append(args, "--since", since)
+	}
+	args = append(args,
 		"--timestamps",
-		s.containerName,
+		containerName,
 	)
+	return args
+}
+
+func dockerSinceUnixArg(v string) string {
+	var d time.Duration
+	switch NormalizeSince(v) {
+	case "1h":
+		d = time.Hour
+	case "2h":
+		d = 2 * time.Hour
+	case "12h":
+		d = 12 * time.Hour
+	case "24h":
+		d = 24 * time.Hour
+	case "7d":
+		d = 7 * 24 * time.Hour
+	default:
+		return ""
+	}
+	return strconv.FormatInt(time.Now().Add(-d).Unix(), 10)
+}
+
+func (s *dockerSource) tailViaCLI(ctx context.Context, n int, opts LogOptions) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "docker", dockerLogArgs(s.containerName, false, n, opts)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("docker logs: %s", strings.TrimSpace(string(out)))
@@ -70,12 +105,8 @@ func (s *dockerSource) tailViaCLI(ctx context.Context, n int) ([]string, error) 
 	return lines, nil
 }
 
-func (s *dockerSource) streamViaCLI(ctx context.Context) (<-chan string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "logs",
-		"-f",
-		"--timestamps",
-		s.containerName,
-	)
+func (s *dockerSource) streamViaCLI(ctx context.Context, opts LogOptions) (<-chan string, error) {
+	cmd := exec.CommandContext(ctx, "docker", dockerLogArgs(s.containerName, true, 0, opts)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("docker pipe: %w", err)
@@ -90,7 +121,9 @@ func (s *dockerSource) streamViaCLI(ctx context.Context) (<-chan string, error) 
 	}
 
 	ch := make(chan string, 64)
+	var wg sync.WaitGroup
 	scanPipe := func(r io.Reader) {
+		defer wg.Done()
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			select {
@@ -101,10 +134,12 @@ func (s *dockerSource) streamViaCLI(ctx context.Context) (<-chan string, error) 
 		}
 	}
 	go func() {
-		defer close(ch)
 		defer cmd.Wait()
+		wg.Add(2)
 		go scanPipe(stderr)
-		scanPipe(stdout)
+		go scanPipe(stdout)
+		wg.Wait()
+		close(ch)
 	}()
 
 	return ch, nil
@@ -122,10 +157,13 @@ func dockerSocketClient() *http.Client {
 	}
 }
 
-func (s *dockerSource) tailViaSocket(ctx context.Context, n int) ([]string, error) {
+func (s *dockerSource) tailViaSocket(ctx context.Context, n int, opts LogOptions) ([]string, error) {
 	client := dockerSocketClient()
 	url := fmt.Sprintf("http://localhost/containers/%s/logs?stdout=1&stderr=1&tail=%d&timestamps=1",
 		s.containerName, n)
+	if since := dockerSinceUnixArg(opts.Since); since != "" {
+		url += "&since=" + since
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -146,10 +184,13 @@ func (s *dockerSource) tailViaSocket(ctx context.Context, n int) ([]string, erro
 	return readDockerLogLines(resp.Body)
 }
 
-func (s *dockerSource) streamViaSocket(ctx context.Context) (<-chan string, error) {
+func (s *dockerSource) streamViaSocket(ctx context.Context, opts LogOptions) (<-chan string, error) {
 	client := dockerSocketClient()
 	url := fmt.Sprintf("http://localhost/containers/%s/logs?stdout=1&stderr=1&follow=1&timestamps=1",
 		s.containerName)
+	if since := dockerSinceUnixArg(opts.Since); since != "" {
+		url += "&since=" + since
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

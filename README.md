@@ -164,6 +164,7 @@ go build -ldflags="-s -w -X main.version=1.2.3" -o telemt-panel .
 | `[telemt]` | `service_name` | Имя systemd-сервиса | `telemt` |
 | `[telemt]` | `github_repo` | GitHub-репозиторий для проверки обновлений | `telemt/telemt` |
 | `[telemt]` | `config_path` | Путь к конфигу Telemt (для Docker / нестандартных путей) | автоматически из API |
+| `[telemt]` | `config_edit_mode` | Режим редактирования конфига Telemt: `api` (через API, Docker-safe, по умолчанию) или `file` (правка файла, требует sudoers tee на systemd) | `api` |
 | `[panel]` | `binary_path` | Путь к бинарнику панели (для самообновления) | `/usr/local/bin/telemt-panel` |
 | `[panel]` | `service_name` | Имя systemd-сервиса панели | `telemt-panel` |
 | `[panel]` | `github_repo` | GitHub-репозиторий панели | `dev-vbs/telemt_panel` |
